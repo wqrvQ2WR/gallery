@@ -25,14 +25,15 @@
 | `film` | 필름 시트 — 콘택트 시트, 필름 구멍, 모노스페이스 라벨 |
 | `magazine` | 매거진 — 에디토리얼, 큼직한 세리프 헤드라인, 빨간 포인트 |
 
-## 웹 UI로 고르기
+## 웹 UI (기본 모드)
 
 ```zsh
-gallery ~/Desktop/짤모음 --ui --open
+gallery ~/Desktop/짤모음
 ```
 
-브라우저에 6개 프리셋이 **실제 내 이미지로** 라이브 미리보기로 뜬다.
-카드를 골라 제목·파일명 넣고 [생성하기]를 누르면 끝. 전체 미리보기(↗)도 지원.
+그냥 폴더만 주면 웹 UI가 브라우저로 열린다. 6개 프리셋이 **실제 내 이미지로**
+라이브 미리보기로 뜨고, 카드를 골라 제목·파일명 넣고 [생성하기]를 누르면 끝.
+전체 미리보기(↗)도 지원. 브라우저 자동 실행이 싫으면 `--no-open`.
 
 ## 설치
 
@@ -47,25 +48,28 @@ source ~/.zshrc
 ## 사용법
 
 ```
-gallery <폴더> [옵션]
+gallery <폴더>                → 웹 UI가 열림 (기본)
+gallery <폴더> -p <프리셋>    → UI 없이 바로 생성
 
 옵션:
-  --ui                 브라우저에서 프리셋을 미리보고 고르는 웹 UI 실행
-  -p, --preset <이름>  프리셋 선택 (기본: dark, 목록은 --presets)
+  -p, --preset <이름>  프리셋 지정 → UI 없이 바로 생성 (목록은 --presets)
+  -o, --out <파일>     출력 HTML 경로 지정 → UI 없이 바로 생성
+                       (기본: <폴더>/gallery.html, 있으면 gallery_2.html …)
   --presets            프리셋 목록 보기
   -t, --title <제목>   전시 제목 (기본: 폴더 이름)
-  -o, --out <파일>     출력 HTML 경로 (기본: <폴더>/gallery.html, 있으면 gallery_2.html …)
   -r, --recursive      하위 폴더까지 스캔
   --min-wide <px>      풀스크린 전시로 걸 최소 가로 픽셀 (기본 900)
   --port <n>           웹 UI 포트 (기본: 8756부터 빈 포트 탐색)
-  --open               만든 뒤(또는 UI를) 브라우저로 열기
+  --no-open            웹 UI를 열 때 브라우저 자동 실행 끄기
+  --open               바로 생성 모드에서 결과를 브라우저로 열기
+  --ui                 프리셋/출력을 지정했어도 웹 UI를 강제로 열기
   help, 도움말, -h     도움말
 ```
 
 예시:
 
 ```zsh
-gallery ~/Desktop/짤모음 --ui --open       # 웹 UI로 고르기
+gallery ~/Desktop/짤모음                   # 웹 UI로 고르기 (기본)
 gallery ~/Desktop/짤모음 -p polaroid --open
 gallery ./assets -t "트릭" -p magazine -o 전시.html
 ```

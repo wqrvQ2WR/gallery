@@ -4,18 +4,21 @@
 gallery — 이미지 폴더를 넣으면 전시(갤러리) HTML을 만들어주는 CLI.
 
 사용법:
-  gallery <폴더> [옵션]
+  gallery <폴더>                → 웹 UI가 열림 (기본). 프리셋 미리보고 골라서 생성
+  gallery <폴더> -p <프리셋>    → UI 없이 바로 생성
 
 옵션:
-  --ui                 브라우저에서 프리셋을 미리보고 고르는 웹 UI 실행
-  -p, --preset <이름>  프리셋 선택 (기본: dark, 목록은 --presets)
+  -p, --preset <이름>  프리셋 지정 → UI 없이 바로 생성 (목록은 --presets)
+  -o, --out <파일>     출력 HTML 경로 지정 → UI 없이 바로 생성
+                       (기본: <폴더>/gallery.html, 있으면 gallery_2.html …)
   --presets            프리셋 목록 보기
   -t, --title <제목>   전시 제목 (기본: 폴더 이름)
-  -o, --out <파일>     출력 HTML 경로 (기본: <폴더>/gallery.html, 있으면 gallery_2.html …)
   -r, --recursive      하위 폴더까지 스캔
   --min-wide <px>      풀스크린 전시로 걸 최소 가로 픽셀 (기본 900)
   --port <n>           웹 UI 포트 (기본: 8756부터 빈 포트 탐색)
-  --open               만든 뒤(또는 UI를) 브라우저로 열기
+  --no-open            웹 UI를 열 때 브라우저 자동 실행 끄기
+  --open               바로 생성 모드에서 결과를 브라우저로 열기
+  --ui                 프리셋/출력을 지정했어도 웹 UI를 강제로 열기
   help, 도움말, -h     이 도움말
 """
 
@@ -803,8 +806,8 @@ def main(argv):
 
     folder = None
     title = out = None
-    preset = DEFAULT_PRESET
-    recursive = ui = open_after = False
+    preset = None
+    recursive = force_ui = open_after = no_open = False
     min_wide = 900
     port = None
     i = 0
@@ -819,7 +822,9 @@ def main(argv):
         elif a == '--presets':
             list_presets(); return 0
         elif a == '--ui':
-            ui = True
+            force_ui = True
+        elif a == '--no-open':
+            no_open = True
         elif a == '--port':
             i += 1; port = int(argv[i])
         elif a in ('-r', '--recursive'):
@@ -836,13 +841,13 @@ def main(argv):
         i += 1
 
     if not folder:
-        print('폴더를 알려주세요. 예: gallery ~/Desktop/이미지들 --ui')
+        print('폴더를 알려주세요. 예: gallery ~/Desktop/이미지들')
         return 1
     folder = os.path.abspath(os.path.expanduser(folder))
     if not os.path.isdir(folder):
         print('폴더가 없어요: %s' % folder)
         return 1
-    if preset not in PRESETS:
+    if preset is not None and preset not in PRESETS:
         print('없는 프리셋: %s' % preset)
         list_presets()
         return 1
@@ -854,9 +859,11 @@ def main(argv):
 
     title = title or os.path.basename(folder)
 
-    if ui:
-        return run_ui(folder, items, title, port, open_after)
+    # 프리셋이나 출력 경로를 콕 집어주지 않으면 웹 UI가 기본
+    if force_ui or (preset is None and out is None):
+        return run_ui(folder, items, title, port, not no_open)
 
+    preset = preset or DEFAULT_PRESET
     out = os.path.abspath(os.path.expanduser(out)) if out \
         else next_free(os.path.join(folder, 'gallery.html'))
     ns, nf, ng = generate(folder, items, preset, title, out, min_wide)
