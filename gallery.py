@@ -16,7 +16,7 @@ gallery — 이미지·동영상 폴더를 넣으면 전시(갤러리) HTML을 �
                        (기본: <폴더>/gallery.html, 있으면 gallery_2.html …)
   --presets            프리셋 목록 보기
   -t, --title <제목>   전시 제목 (기본: 폴더 이름)
-  -r, --recursive      하위 폴더까지 스캔
+  --flat               하위 폴더 무시 (기본은 하위 폴더 안 파일까지 전부 씀)
   --min-wide <px>      풀스크린 전시로 걸 최소 가로 픽셀 (기본 900)
   --audio <파일=A-B>   오디오 스크롤 구간 커스텀(%). 예: --audio bgm.mp3=0-50
                        여러 번 사용 가능. 지정한 파일들만 그 구간에서 재생
@@ -138,14 +138,14 @@ def parse_name(filename):
 
 # ── 수집 & 분류 ──────────────────────────────────────────────
 
-def collect(folder, recursive):
+def collect(folder, recursive=True):
     items = []
     if recursive:
         walker = os.walk(folder)
     else:
         walker = [(folder, [], sorted(os.listdir(folder)))]
     for root, dirs, files in walker:
-        dirs.sort()
+        dirs[:] = sorted(d for d in dirs if not d.startswith('.'))
         for name in sorted(files):
             if name.startswith('.'):
                 continue
@@ -165,14 +165,14 @@ def collect(folder, recursive):
     return items
 
 
-def collect_audio(folder, recursive):
+def collect_audio(folder, recursive=True):
     tracks = []
     if recursive:
         walker = os.walk(folder)
     else:
         walker = [(folder, [], sorted(os.listdir(folder)))]
     for root, dirs, files in walker:
-        dirs.sort()
+        dirs[:] = sorted(d for d in dirs if not d.startswith('.'))
         for name in sorted(files):
             if name.startswith('.'):
                 continue
@@ -941,7 +941,8 @@ def main(argv):
     folder = None
     title = out = None
     preset = None
-    recursive = force_ui = open_after = no_open = no_audio = False
+    recursive = True
+    force_ui = open_after = no_open = no_audio = False
     audio_specs = []
     min_wide = 900
     port = None
@@ -966,8 +967,10 @@ def main(argv):
             no_audio = True
         elif a == '--port':
             i += 1; port = int(argv[i])
-        elif a in ('-r', '--recursive'):
+        elif a in ('-r', '--recursive'):  # 이제 기본값이라 하위 호환용
             recursive = True
+        elif a == '--flat':
+            recursive = False
         elif a == '--min-wide':
             i += 1; min_wide = int(argv[i])
         elif a == '--open':
