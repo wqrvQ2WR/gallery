@@ -1,26 +1,33 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-gallery — 이미지 폴더를 넣으면 다크 전시(갤러리) HTML을 만들어주는 CLI.
+gallery — 이미지 폴더를 넣으면 전시(갤러리) HTML을 만들어주는 CLI.
 
 사용법:
   gallery <폴더> [옵션]
 
 옵션:
+  --ui                 브라우저에서 프리셋을 미리보고 고르는 웹 UI 실행
+  -p, --preset <이름>  프리셋 선택 (기본: dark, 목록은 --presets)
+  --presets            프리셋 목록 보기
   -t, --title <제목>   전시 제목 (기본: 폴더 이름)
   -o, --out <파일>     출력 HTML 경로 (기본: <폴더>/gallery.html, 있으면 gallery_2.html …)
   -r, --recursive      하위 폴더까지 스캔
   --min-wide <px>      풀스크린 전시로 걸 최소 가로 픽셀 (기본 900)
-  --open               만든 뒤 브라우저로 열기
+  --port <n>           웹 UI 포트 (기본: 8756부터 빈 포트 탐색)
+  --open               만든 뒤(또는 UI를) 브라우저로 열기
   help, 도움말, -h     이 도움말
 """
 
 import json
+import mimetypes
 import os
 import re
 import struct
 import sys
 import webbrowser
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import unquote, urlparse, parse_qs, quote
 
 IMG_EXTS = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg', '.avif'}
 HASH_RE = re.compile(r'-[A-Za-z0-9_-]{8}$')  # vite 등 빌드 해시 접미사
@@ -169,6 +176,178 @@ def pick_hero(items):
     return max(pool, key=lambda i: i['bytes'])
 
 
+# ── 프리셋 ───────────────────────────────────────────────────
+
+PRESETS = {
+    'dark': {
+        'label': '다크 전시',
+        'desc': '어두운 미술관. 은은한 스크롤 리빌과 그라데이션 타이틀.',
+        'fonts': 'Noto+Sans+KR:wght@200;300;400;500&family=Inter:wght@200;300;400',
+        'vars': {
+            '--bg': '#0a0a0a', '--fg': '#d4d0ca', '--muted': '#555', '--faint': '#333',
+            '--line': '#1a1a1a', '--cell-bg': '#111', '--label-fg': '#999',
+            '--overlay': 'rgba(0,0,0,.88)', '--hover-bg': 'rgba(255,255,255,.04)',
+            '--hero-filter': 'saturate(.6) brightness(.5)',
+            '--hero-grad': 'linear-gradient(180deg,#e8e4de 40%,#666)',
+            '--font-body': "'Noto Sans KR','Inter',sans-serif",
+            '--font-display': "'Noto Sans KR','Inter',sans-serif",
+        },
+        'extra': '',
+    },
+    'white': {
+        'label': '화이트 큐브',
+        'desc': '밝은 화이트 갤러리. 세리프 타이포와 흰 매트 액자.',
+        'fonts': 'Noto+Serif+KR:wght@300;500;700&family=Noto+Sans+KR:wght@300;400',
+        'vars': {
+            '--bg': '#f4f2ee', '--fg': '#211d18', '--muted': '#8a8378', '--faint': '#b5aea2',
+            '--line': '#d8d2c6', '--cell-bg': '#fff', '--label-fg': '#7a736a',
+            '--overlay': 'rgba(244,242,238,.94)', '--hover-bg': 'rgba(0,0,0,.05)',
+            '--hero-filter': 'saturate(.85) brightness(.72)',
+            '--hero-grad': 'linear-gradient(180deg,#fff 40%,#cfc9bd)',
+            '--font-body': "'Noto Sans KR',sans-serif",
+            '--font-display': "'Noto Serif KR',serif",
+        },
+        'extra': '''
+.hero .title-overlay h2{text-shadow:0 4px 40px rgba(0,0,0,.3)}
+.exhibit.full{padding:70px 48px;min-height:auto}
+.exhibit.full .artwork .frame{background:#fff;padding:22px;box-shadow:0 24px 60px rgba(30,22,8,.14)}
+.exhibit.full .artwork .frame img{max-height:76vh}
+.exhibit.full .caption{position:static;padding:18px 4px 0}
+.exhibit.full .caption .title{font-family:var(--font-display);font-size:18px}
+.carousel{gap:24px;padding:0 24px}
+.carousel .cell{aspect-ratio:auto;background:#fff;padding:12px;box-shadow:0 10px 28px rgba(30,22,8,.10)}
+.carousel .cell img{aspect-ratio:16/11}
+.carousel .cell .c-label{position:static;opacity:1;background:none;padding:10px 2px 0}
+.carousel .cell .c-label span{font-family:var(--font-display);font-style:italic}
+''',
+    },
+    'polaroid': {
+        'label': '폴라로이드',
+        'desc': '크림색 스크랩북. 삐뚤빼뚤 붙인 폴라로이드와 손글씨 캡션.',
+        'fonts': 'Nanum+Pen+Script&family=Noto+Sans+KR:wght@300;400',
+        'vars': {
+            '--bg': '#ece5d4', '--fg': '#4a4132', '--muted': '#8d8168', '--faint': '#b3a789',
+            '--line': '#d6cbb2', '--cell-bg': '#fdfdf8', '--label-fg': '#5a4f3f',
+            '--overlay': 'rgba(236,229,212,.95)', '--hover-bg': 'rgba(0,0,0,.05)',
+            '--hero-filter': 'sepia(.25) saturate(.8) brightness(.66)',
+            '--hero-grad': 'linear-gradient(180deg,#fffbe9 40%,#c9ba93)',
+            '--font-body': "'Noto Sans KR',sans-serif",
+            '--font-display': "'Nanum Pen Script',cursive",
+        },
+        'extra': '''
+.hero .title-overlay h2{font-size:clamp(64px,14vw,170px);letter-spacing:0;text-shadow:0 4px 40px rgba(0,0,0,.35)}
+.exhibit.full{padding:70px 8vw;min-height:auto}
+.exhibit.full .artwork .frame{background:#fdfdf8;padding:16px 16px 60px;box-shadow:0 18px 40px rgba(70,52,20,.22)}
+.exhibit.full .artwork .frame img{max-height:74vh}
+.exhibit.full .caption{position:absolute;bottom:14px;left:0;right:0;text-align:center}
+.exhibit.full .caption .num{display:none}
+.exhibit.full .caption .title{font-family:var(--font-display);font-size:26px;color:#5a4f3f}
+.carousel{gap:34px;padding:0 34px}
+.carousel .cell{aspect-ratio:auto;background:#fdfdf8;padding:12px 12px 44px;box-shadow:0 14px 30px rgba(70,52,20,.20)}
+.carousel .cell img{aspect-ratio:1/1}
+.carousel .cell .c-label{position:absolute;top:auto;bottom:4px;left:0;right:0;opacity:1;background:none;text-align:center;padding:0}
+.carousel .cell .c-label span{font-family:var(--font-display);font-size:19px;letter-spacing:0}
+.carousel .cell.visible:nth-child(4n+1){transform:rotate(-1.6deg)}
+.carousel .cell.visible:nth-child(4n+2){transform:rotate(1.2deg)}
+.carousel .cell.visible:nth-child(4n+3){transform:rotate(-.7deg)}
+.carousel .cell.visible:nth-child(4n){transform:rotate(1.8deg)}
+.carousel .cell:hover{z-index:5}
+''',
+    },
+    'neon': {
+        'label': '네온 아케이드',
+        'desc': '심야 아케이드. 시안·마젠타 네온 글로우.',
+        'fonts': 'Orbitron:wght@500;700&family=Noto+Sans+KR:wght@300;400',
+        'vars': {
+            '--bg': '#050510', '--fg': '#d8f6ff', '--muted': '#3e6b78', '--faint': '#23414b',
+            '--line': '#101827', '--cell-bg': '#0a0f1e', '--label-fg': '#7fdbe8',
+            '--overlay': 'rgba(3,5,16,.9)', '--hover-bg': 'rgba(0,255,255,.06)',
+            '--hero-filter': 'saturate(1.25) brightness(.45) contrast(1.1)',
+            '--hero-grad': 'linear-gradient(180deg,#eafcff 40%,#59c2d6)',
+            '--font-body': "'Noto Sans KR',sans-serif",
+            '--font-display': "'Orbitron','Noto Sans KR',sans-serif",
+        },
+        'extra': '''
+.hero .title-overlay h2{-webkit-text-fill-color:#eafcff;background:none;letter-spacing:6px;
+  text-shadow:0 0 16px rgba(0,255,255,.8),0 0 60px rgba(0,255,255,.35),0 0 120px rgba(255,0,255,.25)}
+.hero .title-overlay p{color:#ff7ae8;text-shadow:0 0 12px rgba(255,0,255,.6)}
+.exhibit.full .artwork .frame{border:1px solid rgba(0,255,255,.16);box-shadow:0 0 46px rgba(255,0,255,.10)}
+.exhibit.full .caption .title{color:#7fdbe8;text-shadow:0 0 10px rgba(0,255,255,.5);font-family:var(--font-display);font-size:13px;letter-spacing:2px}
+.carousel{gap:10px;padding:0 10px}
+.carousel .cell{border:1px solid rgba(0,255,255,.16)}
+.carousel .cell:hover{border-color:rgba(0,255,255,.55);box-shadow:0 0 24px rgba(0,255,255,.28)}
+.carousel .cell .c-label span{font-family:var(--font-display);font-size:9px;letter-spacing:2px}
+''',
+    },
+    'film': {
+        'label': '필름 시트',
+        'desc': '콘택트 시트. 필름 스트립 구멍과 모노스페이스 라벨.',
+        'fonts': 'IBM+Plex+Mono:wght@300;400&family=Noto+Sans+KR:wght@300',
+        'vars': {
+            '--bg': '#0d0c0a', '--fg': '#cfc9bd', '--muted': '#6b6355', '--faint': '#403a30',
+            '--line': '#221e18', '--cell-bg': '#000', '--label-fg': '#c9c2b4',
+            '--overlay': 'rgba(8,8,6,.93)', '--hover-bg': 'rgba(255,255,255,.05)',
+            '--hero-filter': 'grayscale(.35) sepia(.22) brightness(.55)',
+            '--hero-grad': 'linear-gradient(180deg,#efe9dc 40%,#7a7263)',
+            '--font-body': "'IBM Plex Mono','Noto Sans KR',monospace",
+            '--font-display': "'IBM Plex Mono',monospace",
+        },
+        'extra': '''
+.hero .title-overlay h2{letter-spacing:2px}
+.hero .title-overlay p{letter-spacing:12px}
+.exhibit.full .artwork .frame{padding:16px 0;background:#000}
+.exhibit.full .artwork .frame::before,.exhibit.full .artwork .frame::after{content:'';position:absolute;left:0;right:0;height:12px;
+  background:radial-gradient(circle at 8px 6px,#cfc9bd 2.6px,transparent 3.1px) 0 0/18px 12px repeat-x}
+.exhibit.full .artwork .frame::before{top:2px}
+.exhibit.full .artwork .frame::after{bottom:2px}
+.exhibit.full .caption .title{font-size:12px;letter-spacing:2px;text-transform:uppercase}
+.carousel{gap:0 14px;padding:0 14px;row-gap:14px}
+.carousel .cell{aspect-ratio:3/2;padding:16px 0;background:#000}
+.carousel .cell::before,.carousel .cell::after{content:'';position:absolute;left:0;right:0;height:11px;z-index:2;
+  background:radial-gradient(circle at 7px 5.5px,#cfc9bd 2.3px,transparent 2.8px) 0 0/16px 11px repeat-x}
+.carousel .cell::before{top:2px}
+.carousel .cell::after{bottom:2px}
+.carousel .cell img{filter:saturate(.85) contrast(1.05)}
+.carousel .cell .c-label span{font-size:9px;letter-spacing:2px;text-transform:uppercase}
+''',
+    },
+    'magazine': {
+        'label': '매거진',
+        'desc': '에디토리얼 매거진. 큼직한 세리프 헤드라인과 빨간 포인트.',
+        'fonts': 'Noto+Serif+KR:wght@400;700;900&family=Inter:wght@300;400',
+        'vars': {
+            '--bg': '#ffffff', '--fg': '#111', '--muted': '#777', '--faint': '#bbb',
+            '--line': '#111', '--cell-bg': '#fff', '--label-fg': '#111',
+            '--overlay': 'rgba(255,255,255,.96)', '--hover-bg': 'rgba(0,0,0,.05)',
+            '--hero-filter': 'saturate(.9) brightness(.62)',
+            '--hero-grad': 'linear-gradient(180deg,#fff 40%,#ddd)',
+            '--font-body': "'Inter','Noto Sans KR',sans-serif",
+            '--font-display': "'Noto Serif KR',serif",
+        },
+        'extra': '''
+.hero .title-overlay h2{-webkit-text-fill-color:#fff;background:none;font-weight:900;letter-spacing:-2px;text-shadow:0 6px 60px rgba(0,0,0,.4)}
+.hero .title-overlay p{color:#eee;letter-spacing:10px}
+.divider{color:#111}
+.divider::before,.divider::after{background:#111;height:2px}
+.section-title{color:#111;font-weight:700;border-top:4px solid #111;margin:100px 48px 0;padding:14px 0 28px;letter-spacing:4px}
+.exhibit.full{padding:80px 48px;min-height:auto}
+.exhibit.full .caption{position:static;padding:14px 0 0;border-top:3px solid #111;margin-top:16px}
+.exhibit.full .caption .num{color:#d0021b;font-weight:700}
+.exhibit.full .caption .title{font-family:var(--font-display);font-size:22px;font-weight:700}
+.carousel{gap:40px 24px;padding:0 48px 20px}
+.carousel .cell{aspect-ratio:auto;background:none}
+.carousel .cell img{aspect-ratio:4/3}
+.carousel .cell .c-label{position:static;opacity:1;background:none;padding:10px 0 0;border-top:1px solid #111;margin-top:10px}
+.carousel .cell .c-label span{font-size:10px;letter-spacing:2px;font-weight:400}
+footer{color:#999}
+@media(max-width:768px){.section-title{margin:60px 20px 0}}
+''',
+    },
+}
+
+DEFAULT_PRESET = 'dark'
+
+
 # ── HTML 생성 ────────────────────────────────────────────────
 
 TEMPLATE = r'''<!DOCTYPE html>
@@ -178,62 +357,63 @@ TEMPLATE = r'''<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>__TITLE__ — 전시</title>
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@200;300;400;500&family=Inter:wght@200;300;400&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=__FONTS__&display=swap');
+:root{__VARS__}
 *{margin:0;padding:0;box-sizing:border-box}
-body{background:#0a0a0a;color:#d4d0ca;font-family:'Noto Sans KR','Inter',sans-serif;font-weight:300;-webkit-font-smoothing:antialiased;overflow-x:hidden}
-#preloader{position:fixed;inset:0;z-index:99999;background:#0a0a0a;display:flex;align-items:center;justify-content:center;transition:opacity .8s ease}
+body{background:var(--bg);color:var(--fg);font-family:var(--font-body);font-weight:300;-webkit-font-smoothing:antialiased;overflow-x:hidden}
+#preloader{position:fixed;inset:0;z-index:99999;background:var(--bg);display:flex;align-items:center;justify-content:center;transition:opacity .8s ease}
 #preloader.hide{opacity:0;pointer-events:none}
-#preloader .spinner{width:20px;height:20px;border:1px solid #2a2a2a;border-top-color:#d4d0ca;border-radius:50%;animation:spin 1s linear infinite}
+#preloader .spinner{width:20px;height:20px;border:1px solid var(--line);border-top-color:var(--fg);border-radius:50%;animation:spin 1s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
 header{position:fixed;top:0;left:0;width:100%;z-index:100;padding:24px 48px;display:flex;justify-content:space-between;align-items:center;mix-blend-mode:difference}
 header .logo{font-size:11px;font-weight:400;letter-spacing:3px;color:#fff}
 header .logo em{font-style:normal;opacity:.4}
 header .info{font-size:10px;color:#888;letter-spacing:2px}
 .hero{width:100%;height:100vh;display:flex;align-items:center;justify-content:center;position:relative;overflow:hidden}
-.hero::after{content:'';position:absolute;inset:0;background:radial-gradient(ellipse at center,transparent 20%,#0a0a0a 85%);pointer-events:none}
-.hero img{width:100%;height:100%;object-fit:cover;filter:saturate(.6) brightness(.5)}
+.hero::after{content:'';position:absolute;inset:0;background:radial-gradient(ellipse at center,transparent 20%,var(--bg) 88%);pointer-events:none}
+.hero img{width:100%;height:100%;object-fit:cover;filter:var(--hero-filter)}
 .hero .title-overlay{position:absolute;z-index:10;text-align:center}
-.hero .title-overlay h2{font-size:clamp(48px,12vw,140px);font-weight:200;letter-spacing:-3px;background:linear-gradient(180deg,#e8e4de 40%,#666);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
-.hero .title-overlay p{margin-top:12px;font-size:11px;color:#555;letter-spacing:8px}
-.hero .scroll-hint{position:absolute;bottom:36px;left:50%;transform:translateX(-50%);font-size:9px;color:#333;letter-spacing:4px;animation:breath 2.4s ease infinite}
+.hero .title-overlay h2{font-size:clamp(48px,12vw,140px);font-weight:200;letter-spacing:-3px;font-family:var(--font-display);background:var(--hero-grad);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.hero .title-overlay p{margin-top:12px;font-size:11px;color:var(--muted);letter-spacing:8px}
+.hero .scroll-hint{position:absolute;bottom:36px;left:50%;transform:translateX(-50%);font-size:9px;color:var(--faint);letter-spacing:4px;animation:breath 2.4s ease infinite;z-index:10}
 @keyframes breath{0%,100%{opacity:.25}50%{opacity:.8}}
 .exhibit.full{min-height:100vh;padding:0;display:flex;flex-direction:column;justify-content:center;align-items:stretch;position:relative}
 .exhibit.full .artwork{opacity:0;transform:scale(.96);transition:all 1.2s cubic-bezier(.25,.46,.45,.94)}
 .exhibit.full .artwork.visible{opacity:1;transform:scale(1)}
-.exhibit.full .artwork .frame{position:relative;display:inline-block;width:100%}
+.exhibit.full .artwork .frame{position:relative;display:block;width:100%}
 .exhibit.full .artwork .frame img{width:100%;max-height:85vh;object-fit:cover;display:block;transition:transform .6s ease}
 .exhibit.full .artwork .frame:hover img{transform:scale(1.01)}
 .exhibit.full .artwork .frame .glint{position:absolute;inset:0;background:linear-gradient(135deg,rgba(255,255,255,.03) 0%,transparent 50%);pointer-events:none}
 .exhibit.full .caption{position:absolute;bottom:48px;left:48px;z-index:10;opacity:0;transform:translateY(20px);transition:all .8s ease .4s}
 .exhibit.full .caption.visible{opacity:1;transform:translateY(0)}
-.exhibit.full .caption .num{font-size:10px;color:#555;letter-spacing:2px;margin-bottom:6px}
-.exhibit.full .caption .title{font-size:16px;font-weight:300;color:#d4d0ca;letter-spacing:1px}
-.divider{padding:60px 48px;text-align:center;font-size:9px;color:#1a1a1a;letter-spacing:6px;position:relative}
-.divider::before,.divider::after{content:'';position:absolute;top:50%;width:30%;height:1px;background:#1a1a1a}
+.exhibit.full .caption .num{font-size:10px;color:var(--muted);letter-spacing:2px;margin-bottom:6px}
+.exhibit.full .caption .title{font-size:16px;font-weight:300;color:var(--fg);letter-spacing:1px}
+.divider{padding:60px 48px;text-align:center;font-size:9px;color:var(--line);letter-spacing:6px;position:relative}
+.divider::before,.divider::after{content:'';position:absolute;top:50%;width:30%;height:1px;background:var(--line)}
 .divider::before{left:48px}
 .divider::after{right:48px}
-.section-title{padding:120px 48px 24px;font-size:10px;color:#333;letter-spacing:6px;font-weight:400}
-.carousel{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:2px;padding:0 2px;background:#0a0a0a}
-.carousel .cell{position:relative;overflow:hidden;cursor:pointer;aspect-ratio:16/10;background:#111;opacity:0;transform:translateY(20px);transition:all .6s cubic-bezier(.25,.46,.45,.94)}
+.section-title{padding:120px 48px 24px;font-size:10px;color:var(--faint);letter-spacing:6px;font-weight:400}
+.carousel{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:2px;padding:0 2px;background:var(--bg)}
+.carousel .cell{position:relative;overflow:hidden;cursor:pointer;aspect-ratio:16/10;background:var(--cell-bg);opacity:0;transform:translateY(20px);transition:all .6s cubic-bezier(.25,.46,.45,.94)}
 .carousel .cell.visible{opacity:1;transform:translateY(0)}
-.carousel .cell img{width:100%;height:100%;object-fit:cover;transition:transform .6s ease,filter .6s ease}
+.carousel .cell img{width:100%;height:100%;object-fit:cover;display:block;transition:transform .6s ease,filter .6s ease}
 .carousel .cell:hover img{transform:scale(1.04);filter:brightness(1.06)}
 .carousel .cell .c-label{position:absolute;bottom:0;left:0;right:0;padding:48px 16px 12px;background:linear-gradient(transparent,rgba(0,0,0,.7));opacity:0;transition:opacity .4s ease}
 .carousel .cell:hover .c-label{opacity:1}
-.carousel .cell .c-label span{font-size:10px;color:#999;letter-spacing:1px}
-.lightbox{position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.88);backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);display:flex;align-items:center;justify-content:center;opacity:0;pointer-events:none;transition:opacity .5s ease}
+.carousel .cell .c-label span{font-size:10px;color:var(--label-fg);letter-spacing:1px}
+.lightbox{position:fixed;inset:0;z-index:9999;background:var(--overlay);backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);display:flex;align-items:center;justify-content:center;opacity:0;pointer-events:none;transition:opacity .5s ease}
 .lightbox.active{opacity:1;pointer-events:auto}
 .lightbox .lb-frame{position:relative;max-width:90vw}
-.lightbox .lb-frame img{max-width:90vw;max-height:88vh;object-fit:contain;border-radius:2px;box-shadow:0 24px 80px rgba(0,0,0,.6);transform:scale(.94);transition:transform .5s cubic-bezier(.25,.46,.45,.94)}
+.lightbox .lb-frame img{max-width:90vw;max-height:88vh;object-fit:contain;border-radius:2px;box-shadow:0 24px 80px rgba(0,0,0,.4);transform:scale(.94);transition:transform .5s cubic-bezier(.25,.46,.45,.94)}
 .lightbox.active .lb-frame img{transform:scale(1)}
-.lightbox .lb-frame .lb-meta{text-align:center;margin-top:16px;font-size:10px;color:#555;letter-spacing:2px}
-.lightbox .lb-close{position:absolute;top:24px;right:32px;width:36px;height:36px;display:flex;align-items:center;justify-content:center;color:#555;font-size:16px;cursor:pointer;background:none;border:none;border-radius:50%;transition:all .3s}
-.lightbox .lb-close:hover{color:#d4d0ca;background:rgba(255,255,255,.04)}
-.lightbox .lb-nav{position:absolute;top:50%;transform:translateY(-50%);width:44px;height:44px;display:flex;align-items:center;justify-content:center;background:none;border:none;color:#444;font-size:18px;cursor:pointer;border-radius:50%;transition:all .3s}
-.lightbox .lb-nav:hover{color:#d4d0ca;background:rgba(255,255,255,.04)}
+.lightbox .lb-frame .lb-meta{text-align:center;margin-top:16px;font-size:10px;color:var(--muted);letter-spacing:2px}
+.lightbox .lb-close{position:absolute;top:24px;right:32px;width:36px;height:36px;display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:16px;cursor:pointer;background:none;border:none;border-radius:50%;transition:all .3s}
+.lightbox .lb-close:hover{color:var(--fg);background:var(--hover-bg)}
+.lightbox .lb-nav{position:absolute;top:50%;transform:translateY(-50%);width:44px;height:44px;display:flex;align-items:center;justify-content:center;background:none;border:none;color:var(--muted);font-size:18px;cursor:pointer;border-radius:50%;transition:all .3s}
+.lightbox .lb-nav:hover{color:var(--fg);background:var(--hover-bg)}
 .lightbox .lb-nav.prev{left:16px}
 .lightbox .lb-nav.next{right:16px}
-footer{padding:120px 48px 40px;text-align:center;font-size:9px;color:#1a1a1a;letter-spacing:4px}
+footer{padding:120px 48px 40px;text-align:center;font-size:9px;color:var(--faint);letter-spacing:4px}
 @media(max-width:768px){
   header{padding:16px 20px}
   .divider{padding:40px 20px}
@@ -248,6 +428,7 @@ footer{padding:120px 48px 40px;text-align:center;font-size:9px;color:#1a1a1a;let
   .lightbox .lb-nav.next{right:4px}
   .lightbox .lb-close{top:12px;right:16px}
 }
+__EXTRA__
 </style>
 </head>
 <body>
@@ -260,7 +441,7 @@ footer{padding:120px 48px 40px;text-align:center;font-size:9px;color:#1a1a1a;let
 </header>
 
 <div class="hero">
-  <img src="__HERO__" alt="" loading="lazy">
+  <img src="__HERO__" alt="">
   <div class="title-overlay">
     <h2>__TITLE__</h2>
     <p>__SUBTITLE__</p>
@@ -352,43 +533,248 @@ document.addEventListener('keydown',e=>{
 '''
 
 
-def js_array(items, out_dir, num_prefix):
-    arr = []
-    for i, it in enumerate(items):
-        rel = os.path.relpath(it['path'], out_dir).replace(os.sep, '/')
-        entry = {'file': rel, 'label': it['label'], 'sub': it['sub']}
-        if num_prefix:
-            entry['num'] = '%s %02d' % (num_prefix, i + 1)
-        arr.append(entry)
-    return json.dumps(arr, ensure_ascii=False).replace('</', '<\\/')
-
-
-def build_html(title, hero, specials, fulls, grid, out_path):
+def render(preset_key, title, hero, specials, fulls, grid, src_of):
+    """프리셋을 적용한 전시 HTML 문자열을 만든다."""
     import datetime
-    out_dir = os.path.dirname(os.path.abspath(out_path))
+    p = PRESETS[preset_key]
     ordered_fulls = specials + fulls
     full_arr = []
     for i, it in enumerate(ordered_fulls):
-        rel = os.path.relpath(it['path'], out_dir).replace(os.sep, '/')
         prefix = 'MOTION' if it['gif'] else 'WORK'
-        full_arr.append({'file': rel, 'label': it['label'], 'sub': it['sub'],
+        full_arr.append({'file': src_of(it['path']), 'label': it['label'], 'sub': it['sub'],
                          'num': '%s %02d' % (prefix, i + 1)})
-    grid_arr = []
-    for it in grid:
-        rel = os.path.relpath(it['path'], out_dir).replace(os.sep, '/')
-        grid_arr.append({'file': rel, 'label': it['label'], 'sub': it['sub']})
+    grid_arr = [{'file': src_of(it['path']), 'label': it['label'], 'sub': it['sub']}
+                for it in grid]
 
-    hero_rel = os.path.relpath(hero['path'], out_dir).replace(os.sep, '/')
-    subtitle = ' · '.join(re.sub(r'[^A-Za-z0-9 ]', '', title).upper().split()) or 'EXHIBITION'
-    html = (TEMPLATE
+    subtitle = ' · '.join(re.sub(r'[^A-Za-z0-9 ]', '', title).upper().split())
+    subtitle = (subtitle + ' · EXHIBITION') if subtitle else 'EXHIBITION'
+    css_vars = ';'.join('%s:%s' % (k, v) for k, v in p['vars'].items())
+    return (TEMPLATE
+            .replace('__FONTS__', p['fonts'])
+            .replace('__VARS__', css_vars)
+            .replace('__EXTRA__', p['extra'])
             .replace('__TITLE__', title.replace('<', '&lt;'))
-            .replace('__SUBTITLE__', subtitle + ' · EXHIBITION' if 'EXHIBITION' not in subtitle else subtitle)
-            .replace('__HERO__', hero_rel.replace('"', '&quot;'))
+            .replace('__SUBTITLE__', subtitle)
+            .replace('__HERO__', src_of(hero['path']).replace('"', '&quot;'))
             .replace('__YEAR__', str(datetime.date.today().year))
             .replace('__FULL_ITEMS__', json.dumps(full_arr, ensure_ascii=False).replace('</', '<\\/'))
             .replace('__GRID_ITEMS__', json.dumps(grid_arr, ensure_ascii=False).replace('</', '<\\/')))
+
+
+def generate(folder, items, preset_key, title, out_path, min_wide):
+    specials, fulls, grid = classify(items, min_wide)
+    hero = pick_hero(items)
+    out_dir = os.path.dirname(os.path.abspath(out_path))
+    src_of = lambda p: os.path.relpath(p, out_dir).replace(os.sep, '/')
+    html = render(preset_key, title, hero, specials, fulls, grid, src_of)
     with open(out_path, 'w', encoding='utf-8') as f:
         f.write(html)
+    return len(specials), len(fulls), len(grid)
+
+
+# ── 웹 UI ────────────────────────────────────────────────────
+
+UI_HTML = r'''<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>gallery — 프리셋 고르기</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;700&display=swap');
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0a0a0a;color:#d4d0ca;font-family:'Noto Sans KR',sans-serif;font-weight:300}
+.top{padding:28px 40px 8px}
+.top h1{font-size:15px;font-weight:500;letter-spacing:3px}
+.top h1 em{font-style:normal;opacity:.4;font-weight:300}
+.top .path{margin-top:6px;font-size:11px;color:#555;letter-spacing:.5px}
+.controls{display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;padding:18px 40px 6px}
+.field{display:flex;flex-direction:column;gap:6px}
+.field label{font-size:10px;color:#666;letter-spacing:2px}
+.field input{background:#141414;border:1px solid #262626;color:#d4d0ca;padding:9px 12px;font-size:13px;border-radius:4px;font-family:inherit;outline:none;width:220px}
+.field input:focus{border-color:#4a4a4a}
+.field.small input{width:110px}
+button.go{background:#d4d0ca;color:#0a0a0a;border:none;padding:10px 26px;font-size:13px;font-weight:500;letter-spacing:1px;border-radius:4px;cursor:pointer;font-family:inherit}
+button.go:hover{background:#fff}
+button.go:disabled{opacity:.4;cursor:wait}
+#msg{padding:6px 40px;font-size:12px;color:#8fae8b;min-height:24px}
+#msg code{color:#d4d0ca;background:#161616;padding:2px 6px;border-radius:3px;font-size:11px}
+#msg a{color:#9ecbff}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:20px;padding:14px 40px 60px}
+.card{position:relative;border:1px solid #222;border-radius:8px;overflow:hidden;cursor:pointer;background:#101010;transition:border-color .25s,transform .25s}
+.card:hover{border-color:#3a3a3a;transform:translateY(-2px)}
+.card.sel{border-color:#d4d0ca}
+.card input{position:absolute;opacity:0;pointer-events:none}
+.pv{position:relative;width:100%;overflow:hidden;background:#000}
+.pv iframe{width:1280px;height:800px;border:0;transform-origin:0 0;pointer-events:none;display:block}
+.meta{display:flex;justify-content:space-between;align-items:center;padding:12px 16px}
+.meta .name{font-size:13px;font-weight:500;letter-spacing:1px}
+.meta .name small{display:block;margin-top:3px;font-size:11px;color:#666;font-weight:300;letter-spacing:.3px}
+.meta a{font-size:11px;color:#777;text-decoration:none;letter-spacing:1px;white-space:nowrap}
+.meta a:hover{color:#d4d0ca}
+.card .badge{position:absolute;top:10px;left:10px;z-index:5;font-size:9px;letter-spacing:2px;background:rgba(212,208,202,.92);color:#0a0a0a;padding:3px 8px;border-radius:3px;opacity:0;transition:opacity .2s}
+.card.sel .badge{opacity:1}
+</style>
+</head>
+<body>
+<div class="top">
+  <h1>GALLERY <em>· 프리셋 고르기</em></h1>
+  <div class="path">__FOLDER__ · __COUNT__ works</div>
+</div>
+<div class="controls">
+  <div class="field"><label>제목</label><input id="i_title" value="__TITLE__"></div>
+  <div class="field"><label>출력 파일명</label><input id="i_out" value="gallery.html"></div>
+  <div class="field small"><label>MIN-WIDE(px)</label><input id="i_mw" type="number" value="900"></div>
+  <button class="go" id="btnGo" onclick="gen()">생성하기</button>
+</div>
+<div id="msg"></div>
+<div class="grid">__CARDS__</div>
+<script>
+function fit(){document.querySelectorAll('.pv').forEach(w=>{const f=w.querySelector('iframe');const s=w.clientWidth/1280;f.style.transform='scale('+s+')';w.style.height=(800*s)+'px'})}
+addEventListener('resize',fit);fit();
+document.querySelectorAll('.card').forEach(c=>{
+  c.addEventListener('click',e=>{
+    if(e.target.closest('a'))return;
+    document.querySelectorAll('.card').forEach(x=>x.classList.remove('sel'));
+    c.classList.add('sel');c.querySelector('input').checked=true;
+  });
+});
+async function gen(){
+  const sel=document.querySelector('input[name=preset]:checked');
+  const msg=document.getElementById('msg'),btn=document.getElementById('btnGo');
+  if(!sel){msg.style.color='#c98b8b';msg.textContent='프리셋을 먼저 골라주세요.';return}
+  btn.disabled=true;msg.style.color='#8fae8b';msg.textContent='생성 중…';
+  try{
+    const r=await fetch('/generate',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({preset:sel.value,title:document.getElementById('i_title').value,
+        out:document.getElementById('i_out').value,min_wide:+document.getElementById('i_mw').value||900})});
+    const d=await r.json();
+    if(d.ok){msg.innerHTML='완성! <code>'+d.path+'</code> &nbsp;<a href="'+d.url+'" target="_blank">브라우저로 보기 ↗</a>'}
+    else{msg.style.color='#c98b8b';msg.textContent=d.error||'실패'}
+  }catch(e){msg.style.color='#c98b8b';msg.textContent='요청 실패: '+e}
+  btn.disabled=false;
+}
+</script>
+</body>
+</html>
+'''
+
+CARD_HTML = '''<label class="card{sel}">
+  <input type="radio" name="preset" value="{key}"{checked}>
+  <span class="badge">선택됨</span>
+  <div class="pv"><iframe src="/preview/{key}" loading="lazy" scrolling="no"></iframe></div>
+  <div class="meta">
+    <div class="name">{label}<small>{desc}</small></div>
+    <a href="/preview/{key}?full=1" target="_blank">전체 미리보기 ↗</a>
+  </div>
+</label>'''
+
+
+def make_handler(folder, items, title):
+    folder_abs = os.path.abspath(folder)
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def _send(self, code, body, ctype='text/html; charset=utf-8'):
+            data = body if isinstance(body, bytes) else body.encode('utf-8')
+            self.send_response(code)
+            self.send_header('Content-Type', ctype)
+            self.send_header('Content-Length', str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def do_GET(self):
+            parsed = urlparse(self.path)
+            path = unquote(parsed.path)
+
+            if path == '/':
+                cards = ''
+                for i, (key, p) in enumerate(PRESETS.items()):
+                    cards += CARD_HTML.format(
+                        key=key, label=p['label'], desc=p['desc'],
+                        sel=' sel' if i == 0 else '', checked=' checked' if i == 0 else '')
+                html = (UI_HTML
+                        .replace('__FOLDER__', folder_abs.replace('<', '&lt;'))
+                        .replace('__COUNT__', str(len(items)))
+                        .replace('__TITLE__', title.replace('"', '&quot;').replace('<', '&lt;'))
+                        .replace('__CARDS__', cards))
+                return self._send(200, html)
+
+            if path.startswith('/preview/'):
+                key = path[len('/preview/'):]
+                if key not in PRESETS:
+                    return self._send(404, '없는 프리셋: %s' % key)
+                full = 'full' in parse_qs(parsed.query)
+                specials, fulls, grid = classify(items, 900)
+                if not full:  # 카드 미리보기는 가볍게 일부만
+                    specials, fulls, grid = specials[:2], fulls[:5], grid[:12]
+                hero = pick_hero(items)
+                src_of = lambda p: '/f/' + quote(os.path.relpath(p, folder_abs).replace(os.sep, '/'))
+                return self._send(200, render(key, title, hero, specials, fulls, grid, src_of))
+
+            if path.startswith('/f/'):
+                rel = path[len('/f/'):]
+                target = os.path.normpath(os.path.join(folder_abs, rel))
+                if not target.startswith(folder_abs + os.sep):
+                    return self._send(403, '안 됨')
+                if not os.path.isfile(target):
+                    return self._send(404, '없는 파일')
+                ctype = mimetypes.guess_type(target)[0] or 'application/octet-stream'
+                with open(target, 'rb') as f:
+                    return self._send(200, f.read(), ctype)
+
+            return self._send(404, '없는 경로')
+
+        def do_POST(self):
+            if urlparse(self.path).path != '/generate':
+                return self._send(404, '{}', 'application/json')
+            try:
+                length = int(self.headers.get('Content-Length', 0))
+                req = json.loads(self.rfile.read(length) or b'{}')
+                key = req.get('preset', DEFAULT_PRESET)
+                if key not in PRESETS:
+                    raise ValueError('없는 프리셋: %s' % key)
+                t = (req.get('title') or title).strip() or title
+                out_name = os.path.basename((req.get('out') or 'gallery.html').strip()) or 'gallery.html'
+                if not out_name.endswith('.html'):
+                    out_name += '.html'
+                min_wide = int(req.get('min_wide') or 900)
+                out_path = next_free(os.path.join(folder_abs, out_name))
+                generate(folder_abs, items, key, t, out_path, min_wide)
+                body = {'ok': True, 'path': out_path,
+                        'url': '/f/' + quote(os.path.basename(out_path))}
+                print('생성: %s (%s)' % (out_path, PRESETS[key]['label']))
+            except Exception as e:
+                body = {'ok': False, 'error': str(e)}
+            return self._send(200, json.dumps(body, ensure_ascii=False), 'application/json')
+
+    return Handler
+
+
+def run_ui(folder, items, title, port, open_browser):
+    handler = make_handler(folder, items, title)
+    last_err = None
+    for p in ([port] if port else range(8756, 8800)):
+        try:
+            server = ThreadingHTTPServer(('127.0.0.1', p), handler)
+            port = p
+            break
+        except OSError as e:
+            last_err = e
+    else:
+        print('포트를 못 잡았어요: %s' % last_err)
+        return 1
+    url = 'http://localhost:%d/' % port
+    print('웹 UI 열림: %s  (끄려면 Ctrl+C)' % url)
+    if open_browser:
+        webbrowser.open(url)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print('\n종료')
+    return 0
 
 
 # ── CLI ──────────────────────────────────────────────────────
@@ -403,6 +789,13 @@ def next_free(path):
     return '%s_%d%s' % (base, n, ext)
 
 
+def list_presets():
+    print('프리셋 목록:')
+    for key, p in PRESETS.items():
+        mark = ' (기본)' if key == DEFAULT_PRESET else ''
+        print('  %-10s %s%s — %s' % (key, p['label'], mark, p['desc']))
+
+
 def main(argv):
     if not argv or argv[0] in ('help', '도움말', '-h', '--help'):
         print(__doc__.strip())
@@ -410,9 +803,10 @@ def main(argv):
 
     folder = None
     title = out = None
-    recursive = False
+    preset = DEFAULT_PRESET
+    recursive = ui = open_after = False
     min_wide = 900
-    open_after = False
+    port = None
     i = 0
     while i < len(argv):
         a = argv[i]
@@ -420,6 +814,14 @@ def main(argv):
             i += 1; title = argv[i]
         elif a in ('-o', '--out'):
             i += 1; out = argv[i]
+        elif a in ('-p', '--preset'):
+            i += 1; preset = argv[i]
+        elif a == '--presets':
+            list_presets(); return 0
+        elif a == '--ui':
+            ui = True
+        elif a == '--port':
+            i += 1; port = int(argv[i])
         elif a in ('-r', '--recursive'):
             recursive = True
         elif a == '--min-wide':
@@ -434,11 +836,15 @@ def main(argv):
         i += 1
 
     if not folder:
-        print('폴더를 알려주세요. 예: gallery ~/Desktop/이미지들')
+        print('폴더를 알려주세요. 예: gallery ~/Desktop/이미지들 --ui')
         return 1
     folder = os.path.abspath(os.path.expanduser(folder))
     if not os.path.isdir(folder):
         print('폴더가 없어요: %s' % folder)
+        return 1
+    if preset not in PRESETS:
+        print('없는 프리셋: %s' % preset)
+        list_presets()
         return 1
 
     items = collect(folder, recursive)
@@ -447,16 +853,16 @@ def main(argv):
         return 1
 
     title = title or os.path.basename(folder)
+
+    if ui:
+        return run_ui(folder, items, title, port, open_after)
+
     out = os.path.abspath(os.path.expanduser(out)) if out \
         else next_free(os.path.join(folder, 'gallery.html'))
-
-    specials, fulls, grid = classify(items, min_wide)
-    hero = pick_hero(items)
-    build_html(title, hero, specials, fulls, grid, out)
-
+    ns, nf, ng = generate(folder, items, preset, title, out, min_wide)
     print('완성! %s' % out)
-    print('  작품 %d점 = 모션 %d + 대형 전시 %d + 그리드 %d'
-          % (len(items), len(specials), len(fulls), len(grid)))
+    print('  프리셋 %s(%s) · 작품 %d점 = 모션 %d + 대형 전시 %d + 그리드 %d'
+          % (preset, PRESETS[preset]['label'], len(items), ns, nf, ng))
     if open_after:
         webbrowser.open('file://' + out)
     return 0
