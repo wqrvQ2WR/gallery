@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-gallery — 이미지 폴더를 넣으면 전시(갤러리) HTML을 만들어주는 CLI.
+gallery — 이미지·동영상 폴더를 넣으면 전시(갤러리) HTML을 만들어주는 CLI.
+
+동영상(.mp4/.webm)은 GIF처럼 스페셜 전시로 걸리고, 폴더에 오디오가 있으면
+스크롤 위치에 따라 BGM이 바뀐다(기본: 균등 분할, --audio로 구간 커스텀).
 
 사용법:
   gallery <폴더>                → 웹 UI가 열림 (기본). 프리셋 미리보고 골라서 생성
@@ -15,6 +18,9 @@ gallery — 이미지 폴더를 넣으면 전시(갤러리) HTML을 만들어주
   -t, --title <제목>   전시 제목 (기본: 폴더 이름)
   -r, --recursive      하위 폴더까지 스캔
   --min-wide <px>      풀스크린 전시로 걸 최소 가로 픽셀 (기본 900)
+  --audio <파일=A-B>   오디오 스크롤 구간 커스텀(%). 예: --audio bgm.mp3=0-50
+                       여러 번 사용 가능. 지정한 파일들만 그 구간에서 재생
+  --no-audio           오디오 아예 빼기
   --port <n>           웹 UI 포트 (기본: 8756부터 빈 포트 탐색)
   --no-open            웹 UI를 열 때 브라우저 자동 실행 끄기
   --open               바로 생성 모드에서 결과를 브라우저로 열기
@@ -33,6 +39,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import unquote, urlparse, parse_qs, quote
 
 IMG_EXTS = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg', '.avif'}
+VIDEO_EXTS = {'.mp4', '.webm'}
+AUDIO_EXTS = {'.mp3', '.wav', '.ogg', '.m4a', '.aac', '.flac', '.opus'}
 HASH_RE = re.compile(r'-[A-Za-z0-9_-]{8}$')  # vite 등 빌드 해시 접미사
 SUB_RE = re.compile(r'_(w|m|w2|m2)$', re.I)
 SUB_NAMES = {'w': 'WIDE', 'm': 'MOBILE', 'w2': 'WIDE 2', 'm2': 'MOBILE 2'}
@@ -141,18 +149,44 @@ def collect(folder, recursive):
         for name in sorted(files):
             if name.startswith('.'):
                 continue
-            if os.path.splitext(name)[1].lower() not in IMG_EXTS:
+            ext = os.path.splitext(name)[1].lower()
+            if ext not in IMG_EXTS and ext not in VIDEO_EXTS:
                 continue
             path = os.path.join(root, name)
-            size = read_size(path)
+            video = ext in VIDEO_EXTS
+            size = None if video else read_size(path)
             label, sub = parse_name(name)
             items.append({
                 'path': path, 'label': label, 'sub': sub,
                 'w': size[0] if size else 0, 'h': size[1] if size else 0,
                 'bytes': os.path.getsize(path),
-                'gif': name.lower().endswith('.gif'),
+                'gif': ext == '.gif', 'video': video,
             })
     return items
+
+
+def collect_audio(folder, recursive):
+    tracks = []
+    if recursive:
+        walker = os.walk(folder)
+    else:
+        walker = [(folder, [], sorted(os.listdir(folder)))]
+    for root, dirs, files in walker:
+        dirs.sort()
+        for name in sorted(files):
+            if name.startswith('.'):
+                continue
+            if os.path.splitext(name)[1].lower() not in AUDIO_EXTS:
+                continue
+            label, _ = parse_name(name)
+            tracks.append({'path': os.path.join(root, name), 'label': label})
+    return tracks
+
+
+def even_split(audio_items):
+    """오디오들을 스크롤 구간(0~1)에 균등하게 배치한 설정을 만든다."""
+    n = len(audio_items)
+    return [dict(t, start=i / n, end=(i + 1) / n) for i, t in enumerate(audio_items)]
 
 
 def classify(items, min_wide):
@@ -163,7 +197,7 @@ def classify(items, min_wide):
 
     specials, fulls, grid = [], [], []
     for it in items:
-        if it['gif']:
+        if it['gif'] or it['video']:
             specials.append(it)
         elif len(groups[it['label']]) >= 3 or it['w'] < min_wide:
             grid.append(it)
@@ -174,8 +208,9 @@ def classify(items, min_wide):
 
 def pick_hero(items):
     """가로가 긴 것 중 파일 용량이 가장 큰 이미지(디테일 많은 그림일 확률이 높다)."""
-    landscape = [i for i in items if i['w'] > i['h'] and not i['gif']]
-    pool = landscape or [i for i in items if not i['gif']] or items
+    stills = [i for i in items if not i['gif'] and not i['video']]
+    landscape = [i for i in stills if i['w'] > i['h']]
+    pool = landscape or stills or items
     return max(pool, key=lambda i: i['bytes'])
 
 
@@ -384,7 +419,7 @@ header .info{font-size:10px;color:#888;letter-spacing:2px}
 .exhibit.full .artwork{opacity:0;transform:scale(.96);transition:all 1.2s cubic-bezier(.25,.46,.45,.94)}
 .exhibit.full .artwork.visible{opacity:1;transform:scale(1)}
 .exhibit.full .artwork .frame{position:relative;display:block;width:100%}
-.exhibit.full .artwork .frame img{width:100%;max-height:85vh;object-fit:cover;display:block;transition:transform .6s ease}
+.exhibit.full .artwork .frame img,.exhibit.full .artwork .frame video{width:100%;max-height:85vh;object-fit:cover;display:block;transition:transform .6s ease}
 .exhibit.full .artwork .frame:hover img{transform:scale(1.01)}
 .exhibit.full .artwork .frame .glint{position:absolute;inset:0;background:linear-gradient(135deg,rgba(255,255,255,.03) 0%,transparent 50%);pointer-events:none}
 .exhibit.full .caption{position:absolute;bottom:48px;left:48px;z-index:10;opacity:0;transform:translateY(20px);transition:all .8s ease .4s}
@@ -407,8 +442,8 @@ header .info{font-size:10px;color:#888;letter-spacing:2px}
 .lightbox{position:fixed;inset:0;z-index:9999;background:var(--overlay);backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);display:flex;align-items:center;justify-content:center;opacity:0;pointer-events:none;transition:opacity .5s ease}
 .lightbox.active{opacity:1;pointer-events:auto}
 .lightbox .lb-frame{position:relative;max-width:90vw}
-.lightbox .lb-frame img{max-width:90vw;max-height:88vh;object-fit:contain;border-radius:2px;box-shadow:0 24px 80px rgba(0,0,0,.4);transform:scale(.94);transition:transform .5s cubic-bezier(.25,.46,.45,.94)}
-.lightbox.active .lb-frame img{transform:scale(1)}
+.lightbox .lb-frame img,.lightbox .lb-frame video{max-width:90vw;max-height:88vh;object-fit:contain;border-radius:2px;box-shadow:0 24px 80px rgba(0,0,0,.4);transform:scale(.94);transition:transform .5s cubic-bezier(.25,.46,.45,.94)}
+.lightbox.active .lb-frame img,.lightbox.active .lb-frame video{transform:scale(1)}
 .lightbox .lb-frame .lb-meta{text-align:center;margin-top:16px;font-size:10px;color:var(--muted);letter-spacing:2px}
 .lightbox .lb-close{position:absolute;top:24px;right:32px;width:36px;height:36px;display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:16px;cursor:pointer;background:none;border:none;border-radius:50%;transition:all .3s}
 .lightbox .lb-close:hover{color:var(--fg);background:var(--hover-bg)}
@@ -417,6 +452,11 @@ header .info{font-size:10px;color:#888;letter-spacing:2px}
 .lightbox .lb-nav.prev{left:16px}
 .lightbox .lb-nav.next{right:16px}
 footer{padding:120px 48px 40px;text-align:center;font-size:9px;color:var(--faint);letter-spacing:4px}
+#sndWrap{position:fixed;bottom:24px;right:24px;z-index:1000;display:none;align-items:center;gap:10px}
+#sndWrap button{background:var(--bg);border:1px solid var(--line);color:var(--muted);font-size:10px;letter-spacing:2px;padding:9px 14px;border-radius:20px;cursor:pointer;font-family:inherit;transition:all .3s}
+#sndWrap button:hover{color:var(--fg);border-color:var(--muted)}
+#sndWrap button.on{color:var(--fg);border-color:var(--fg)}
+#sndLabel{font-size:9px;color:var(--muted);letter-spacing:1px;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 @media(max-width:768px){
   header{padding:16px 20px}
   .divider{padding:40px 20px}
@@ -466,6 +506,8 @@ __EXTRA__
   <div class="lb-frame" id="lbFrame"></div>
 </div>
 
+<div id="sndWrap"><span id="sndLabel"></span><button id="sndBtn">♪ OFF</button></div>
+
 <script>
 window.addEventListener('load',()=>{document.getElementById('preloader').classList.add('hide')});
 
@@ -483,7 +525,10 @@ fullItems.forEach((item,i)=>{
   const div=document.createElement('div');
   div.className='exhibit full';
   div.addEventListener('click',()=>openLB(i));
-  div.innerHTML=`<div class="artwork"><div class="frame"><img src="${item.file}" alt="${esc(item.label)}" loading="lazy"><div class="glint"></div></div></div>
+  const media=item.video
+    ?`<video src="${item.file}" autoplay muted loop playsinline></video>`
+    :`<img src="${item.file}" alt="${esc(item.label)}" loading="lazy">`;
+  div.innerHTML=`<div class="artwork"><div class="frame">${media}<div class="glint"></div></div></div>
   <div class="caption"><div class="num">${item.num}</div><div class="title">${esc(item.label)}${item.sub?' · '+esc(item.sub):''}</div></div>`;
   fullWrap.appendChild(div);
 });
@@ -513,11 +558,22 @@ const observer=new IntersectionObserver(entries=>{
 document.querySelectorAll('.exhibit.full').forEach(el=>observer.observe(el));
 document.querySelectorAll('.carousel .cell').forEach((el,i)=>{el.style.transitionDelay=(i%6)*60+'ms';observer.observe(el)});
 
+// 동영상: 화면에 보이면 재생, 벗어나면 정지 (autoplay가 막힌 브라우저 대비)
+document.querySelectorAll('.exhibit.full video').forEach(v=>{
+  v.muted=true;
+  new IntersectionObserver(es=>es.forEach(e=>{
+    if(e.isIntersecting)v.play().catch(()=>{});else v.pause();
+  }),{threshold:.2}).observe(v);
+});
+
 function openLB(idx){ci=idx;updateLB();document.getElementById('lightbox').classList.add('active');document.body.style.overflow='hidden'}
 function updateLB(){
   const item=allItems[ci];
+  const media=item.video
+    ?`<video src="${item.file}" controls autoplay loop playsinline></video>`
+    :`<img src="${item.file}" alt="${esc(item.label)}">`;
   document.getElementById('lbFrame').innerHTML=
-    `<img src="${item.file}" alt="${esc(item.label)}"><div class="lb-meta">${esc(item.label)}${item.sub?' · '+esc(item.sub):''} · ${ci+1}/${allItems.length}</div>`;
+    `${media}<div class="lb-meta">${esc(item.label)}${item.sub?' · '+esc(item.sub):''} · ${ci+1}/${allItems.length}</div>`;
 }
 function closeLB(){document.getElementById('lightbox').classList.remove('active');document.body.style.overflow=''}
 document.getElementById('lbClose').addEventListener('click',closeLB);
@@ -530,24 +586,54 @@ document.addEventListener('keydown',e=>{
   if(e.key==='ArrowLeft'){ci=(ci-1+allItems.length)%allItems.length;updateLB()}
   if(e.key==='ArrowRight'){ci=(ci+1)%allItems.length;updateLB()}
 });
+
+// ── 스크롤 BGM ──
+const audioTracks=__AUDIO__;
+if(audioTracks.length){
+  const wrap=document.getElementById('sndWrap');wrap.style.display='flex';
+  const btn=document.getElementById('sndBtn'),lbl=document.getElementById('sndLabel');
+  const players=audioTracks.map(t=>{const a=new Audio(t.file);a.loop=true;a.preload='none';a.volume=0;return a});
+  let on=false,cur=-1;
+  function pick(){
+    const max=document.documentElement.scrollHeight-innerHeight;
+    const f=max>0?Math.min(1,Math.max(0,scrollY/max)):0;
+    cur=audioTracks.findIndex((t,i)=>f>=t.start&&(f<t.end||(i===audioTracks.length-1&&f<=t.end)));
+    lbl.textContent=(on&&cur>=0)?audioTracks[cur].label:'';
+  }
+  addEventListener('scroll',pick,{passive:true});pick();
+  btn.addEventListener('click',()=>{
+    on=!on;btn.textContent=on?'♪ ON':'♪ OFF';btn.classList.toggle('on',on);pick();
+    if(on&&cur>=0)players[cur].play().catch(()=>{});
+  });
+  setInterval(()=>{players.forEach((a,i)=>{
+    const target=(on&&i===cur)?1:0;
+    const d=target-a.volume;
+    if(d!==0)a.volume=Math.max(0,Math.min(1,a.volume+Math.sign(d)*Math.min(.07,Math.abs(d))));
+    if(on&&i===cur&&a.paused)a.play().catch(()=>{});
+    if(target===0&&a.volume<=0.001&&!a.paused)a.pause();
+  })},90);
+}
 </script>
 </body>
 </html>
 '''
 
 
-def render(preset_key, title, hero, specials, fulls, grid, src_of):
+def render(preset_key, title, hero, specials, fulls, grid, src_of, audio_cfg=None):
     """프리셋을 적용한 전시 HTML 문자열을 만든다."""
     import datetime
     p = PRESETS[preset_key]
     ordered_fulls = specials + fulls
     full_arr = []
     for i, it in enumerate(ordered_fulls):
-        prefix = 'MOTION' if it['gif'] else 'WORK'
+        prefix = 'MOTION' if (it['gif'] or it['video']) else 'WORK'
         full_arr.append({'file': src_of(it['path']), 'label': it['label'], 'sub': it['sub'],
-                         'num': '%s %02d' % (prefix, i + 1)})
+                         'video': it['video'], 'num': '%s %02d' % (prefix, i + 1)})
     grid_arr = [{'file': src_of(it['path']), 'label': it['label'], 'sub': it['sub']}
                 for it in grid]
+    audio_arr = [{'file': src_of(t['path']), 'label': t['label'],
+                  'start': round(t['start'], 4), 'end': round(t['end'], 4)}
+                 for t in (audio_cfg or [])]
 
     subtitle = ' · '.join(re.sub(r'[^A-Za-z0-9 ]', '', title).upper().split())
     subtitle = (subtitle + ' · EXHIBITION') if subtitle else 'EXHIBITION'
@@ -561,15 +647,16 @@ def render(preset_key, title, hero, specials, fulls, grid, src_of):
             .replace('__HERO__', src_of(hero['path']).replace('"', '&quot;'))
             .replace('__YEAR__', str(datetime.date.today().year))
             .replace('__FULL_ITEMS__', json.dumps(full_arr, ensure_ascii=False).replace('</', '<\\/'))
-            .replace('__GRID_ITEMS__', json.dumps(grid_arr, ensure_ascii=False).replace('</', '<\\/')))
+            .replace('__GRID_ITEMS__', json.dumps(grid_arr, ensure_ascii=False).replace('</', '<\\/'))
+            .replace('__AUDIO__', json.dumps(audio_arr, ensure_ascii=False).replace('</', '<\\/')))
 
 
-def generate(folder, items, preset_key, title, out_path, min_wide):
+def generate(folder, items, preset_key, title, out_path, min_wide, audio_cfg=None):
     specials, fulls, grid = classify(items, min_wide)
     hero = pick_hero(items)
     out_dir = os.path.dirname(os.path.abspath(out_path))
     src_of = lambda p: os.path.relpath(p, out_dir).replace(os.sep, '/')
-    html = render(preset_key, title, hero, specials, fulls, grid, src_of)
+    html = render(preset_key, title, hero, specials, fulls, grid, src_of, audio_cfg)
     with open(out_path, 'w', encoding='utf-8') as f:
         f.write(html)
     return len(specials), len(fulls), len(grid)
@@ -600,6 +687,15 @@ body{background:#0a0a0a;color:#d4d0ca;font-family:'Noto Sans KR',sans-serif;font
 button.go{background:#d4d0ca;color:#0a0a0a;border:none;padding:10px 26px;font-size:13px;font-weight:500;letter-spacing:1px;border-radius:4px;cursor:pointer;font-family:inherit}
 button.go:hover{background:#fff}
 button.go:disabled{opacity:.4;cursor:wait}
+.apanel{margin:10px 40px 0;border:1px solid #222;border-radius:8px;padding:16px 20px;max-width:560px}
+.apanel .ap-t{font-size:11px;letter-spacing:2px;color:#888;margin-bottom:4px}
+.apanel .ap-t small{color:#555;letter-spacing:.5px;margin-left:8px}
+.arow{display:flex;justify-content:space-between;align-items:center;gap:16px;padding:8px 0;border-bottom:1px solid #1a1a1a;font-size:12px}
+.arow:last-child{border-bottom:0}
+.arow label{display:flex;align-items:center;gap:8px;cursor:pointer;color:#bbb;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.arow input[type=checkbox]{accent-color:#d4d0ca}
+.arow .rng{display:flex;align-items:center;gap:4px;color:#666;font-size:11px;white-space:nowrap}
+.arow .rng input{background:#141414;border:1px solid #262626;color:#d4d0ca;padding:5px 6px;font-size:12px;border-radius:4px;width:56px;text-align:right;font-family:inherit;outline:none}
 #msg{padding:6px 40px;font-size:12px;color:#8fae8b;min-height:24px}
 #msg code{color:#d4d0ca;background:#161616;padding:2px 6px;border-radius:3px;font-size:11px}
 #msg a{color:#9ecbff}
@@ -630,6 +726,7 @@ button.go:disabled{opacity:.4;cursor:wait}
   <div class="field small"><label>MIN-WIDE(px)</label><input id="i_mw" type="number" value="900"></div>
   <button class="go" id="btnGo" onclick="gen()">생성하기</button>
 </div>
+__AUDIO_PANEL__
 <div id="msg"></div>
 <div class="grid">__CARDS__</div>
 <script>
@@ -648,9 +745,13 @@ async function gen(){
   if(!sel){msg.style.color='#c98b8b';msg.textContent='프리셋을 먼저 골라주세요.';return}
   btn.disabled=true;msg.style.color='#8fae8b';msg.textContent='생성 중…';
   try{
+    const audio=[...document.querySelectorAll('.arow')]
+      .filter(r=>r.querySelector('.a-on').checked)
+      .map(r=>({file:r.querySelector('.a-on').dataset.file,
+        start:(+r.querySelector('.a-s').value||0)/100,end:(+r.querySelector('.a-e').value||0)/100}));
     const r=await fetch('/generate',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({preset:sel.value,title:document.getElementById('i_title').value,
-        out:document.getElementById('i_out').value,min_wide:+document.getElementById('i_mw').value||900})});
+        out:document.getElementById('i_out').value,min_wide:+document.getElementById('i_mw').value||900,audio})});
     const d=await r.json();
     if(d.ok){msg.innerHTML='완성! <code>'+d.path+'</code> &nbsp;<a href="'+d.url+'" target="_blank">브라우저로 보기 ↗</a>'}
     else{msg.style.color='#c98b8b';msg.textContent=d.error||'실패'}
@@ -673,7 +774,14 @@ CARD_HTML = '''<label class="card{sel}">
 </label>'''
 
 
-def make_handler(folder, items, title):
+AUDIO_ROW = '''<div class="arow">
+  <label><input type="checkbox" class="a-on" checked data-file="{file}"> {label}</label>
+  <span class="rng"><input type="number" class="a-s" value="{s}" min="0" max="100">% ~
+  <input type="number" class="a-e" value="{e}" min="0" max="100">%</span>
+</div>'''
+
+
+def make_handler(folder, items, audio_items, title):
     folder_abs = os.path.abspath(folder)
 
     class Handler(BaseHTTPRequestHandler):
@@ -698,10 +806,22 @@ def make_handler(folder, items, title):
                     cards += CARD_HTML.format(
                         key=key, label=p['label'], desc=p['desc'],
                         sel=' sel' if i == 0 else '', checked=' checked' if i == 0 else '')
+                panel = ''
+                if audio_items:
+                    rows = ''
+                    for t in even_split(audio_items):
+                        rel = os.path.relpath(t['path'], folder_abs).replace(os.sep, '/')
+                        rows += AUDIO_ROW.format(
+                            file=rel.replace('"', '&quot;'), label=t['label'].replace('<', '&lt;'),
+                            s=round(t['start'] * 100, 1), e=round(t['end'] * 100, 1))
+                    panel = ('<div class="apanel"><div class="ap-t">스크롤 BGM'
+                             '<small>스크롤 위치(%) 구간마다 다른 곡이 재생 · 기본은 균등 분할</small></div>'
+                             + rows + '</div>')
                 html = (UI_HTML
                         .replace('__FOLDER__', folder_abs.replace('<', '&lt;'))
                         .replace('__COUNT__', str(len(items)))
                         .replace('__TITLE__', title.replace('"', '&quot;').replace('<', '&lt;'))
+                        .replace('__AUDIO_PANEL__', panel)
                         .replace('__CARDS__', cards))
                 return self._send(200, html)
 
@@ -715,7 +835,8 @@ def make_handler(folder, items, title):
                     specials, fulls, grid = specials[:2], fulls[:5], grid[:12]
                 hero = pick_hero(items)
                 src_of = lambda p: '/f/' + quote(os.path.relpath(p, folder_abs).replace(os.sep, '/'))
-                return self._send(200, render(key, title, hero, specials, fulls, grid, src_of))
+                audio_cfg = even_split(audio_items) if (full and audio_items) else []
+                return self._send(200, render(key, title, hero, specials, fulls, grid, src_of, audio_cfg))
 
             if path.startswith('/f/'):
                 rel = path[len('/f/'):]
@@ -744,8 +865,21 @@ def make_handler(folder, items, title):
                 if not out_name.endswith('.html'):
                     out_name += '.html'
                 min_wide = int(req.get('min_wide') or 900)
+                if 'audio' in req:
+                    audio_cfg = []
+                    labels = {os.path.relpath(a['path'], folder_abs).replace(os.sep, '/'): a
+                              for a in audio_items}
+                    for entry in req['audio']:
+                        src = labels.get(entry.get('file', ''))
+                        if not src:
+                            raise ValueError('없는 오디오: %s' % entry.get('file'))
+                        audio_cfg.append({'path': src['path'], 'label': src['label'],
+                                          'start': float(entry.get('start', 0)),
+                                          'end': float(entry.get('end', 1))})
+                else:
+                    audio_cfg = even_split(audio_items)
                 out_path = next_free(os.path.join(folder_abs, out_name))
-                generate(folder_abs, items, key, t, out_path, min_wide)
+                generate(folder_abs, items, key, t, out_path, min_wide, audio_cfg)
                 body = {'ok': True, 'path': out_path,
                         'url': '/f/' + quote(os.path.basename(out_path))}
                 print('생성: %s (%s)' % (out_path, PRESETS[key]['label']))
@@ -756,8 +890,8 @@ def make_handler(folder, items, title):
     return Handler
 
 
-def run_ui(folder, items, title, port, open_browser):
-    handler = make_handler(folder, items, title)
+def run_ui(folder, items, audio_items, title, port, open_browser):
+    handler = make_handler(folder, items, audio_items, title)
     last_err = None
     for p in ([port] if port else range(8756, 8800)):
         try:
@@ -807,7 +941,8 @@ def main(argv):
     folder = None
     title = out = None
     preset = None
-    recursive = force_ui = open_after = no_open = False
+    recursive = force_ui = open_after = no_open = no_audio = False
+    audio_specs = []
     min_wide = 900
     port = None
     i = 0
@@ -825,6 +960,10 @@ def main(argv):
             force_ui = True
         elif a == '--no-open':
             no_open = True
+        elif a == '--audio':
+            i += 1; audio_specs.append(argv[i])
+        elif a == '--no-audio':
+            no_audio = True
         elif a == '--port':
             i += 1; port = int(argv[i])
         elif a in ('-r', '--recursive'):
@@ -858,18 +997,41 @@ def main(argv):
         return 1
 
     title = title or os.path.basename(folder)
+    audio_items = [] if no_audio else collect_audio(folder, recursive)
 
     # 프리셋이나 출력 경로를 콕 집어주지 않으면 웹 UI가 기본
     if force_ui or (preset is None and out is None):
-        return run_ui(folder, items, title, port, not no_open)
+        return run_ui(folder, items, audio_items, title, port, not no_open)
+
+    # 오디오 구간: --audio 지정이 있으면 그것만, 없으면 균등 분할
+    if audio_specs:
+        audio_cfg = []
+        by_name = {os.path.basename(t['path']).lower(): t for t in audio_items}
+        for spec in audio_specs:
+            m = re.match(r'(.+?)=([\d.]+)-([\d.]+)$', spec)
+            if not m:
+                print('--audio 형식이 이상해요: %s (예: bgm.mp3=0-50)' % spec)
+                return 1
+            t = by_name.get(m.group(1).lower())
+            if not t:
+                print('폴더에 없는 오디오: %s' % m.group(1))
+                return 1
+            audio_cfg.append(dict(t, start=float(m.group(2)) / 100,
+                                  end=float(m.group(3)) / 100))
+    else:
+        audio_cfg = even_split(audio_items)
 
     preset = preset or DEFAULT_PRESET
     out = os.path.abspath(os.path.expanduser(out)) if out \
         else next_free(os.path.join(folder, 'gallery.html'))
-    ns, nf, ng = generate(folder, items, preset, title, out, min_wide)
+    ns, nf, ng = generate(folder, items, preset, title, out, min_wide, audio_cfg)
     print('완성! %s' % out)
     print('  프리셋 %s(%s) · 작품 %d점 = 모션 %d + 대형 전시 %d + 그리드 %d'
           % (preset, PRESETS[preset]['label'], len(items), ns, nf, ng))
+    if audio_cfg:
+        print('  BGM %d곡: %s' % (len(audio_cfg),
+              ', '.join('%s(%d~%d%%)' % (t['label'], t['start'] * 100, t['end'] * 100)
+                        for t in audio_cfg)))
     if open_after:
         webbrowser.open('file://' + out)
     return 0

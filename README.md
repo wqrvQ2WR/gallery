@@ -1,11 +1,12 @@
 # gallery
 
-이미지 폴더를 넣으면 전시(exhibition) 스타일의 단일 `gallery.html`을 만들어주는 CLI.
+이미지·동영상 폴더를 넣으면 전시(exhibition) 스타일의 단일 `gallery.html`을 만들어주는 CLI.
 
 폴더 하나 던지면 알아서 큐레이션해서 미술관처럼 걸어준다:
 
 - **히어로** — 가로형 이미지 중 가장 디테일한 것(파일 용량 기준)을 골라 타이틀 뒤에 깔음
-- **MOTION** — GIF는 맨 위 스페셜로
+- **MOTION** — GIF·동영상(.mp4/.webm)은 맨 위 스페셜로. 화면에 보이면 자동 재생(음소거 루프), 라이트박스에선 컨트롤 지원
+- **스크롤 BGM** — 폴더에 오디오(.mp3 .wav .ogg .m4a .aac .flac .opus)가 있으면 스크롤 위치에 따라 곡이 바뀐다. 우하단 ♪ 버튼으로 켬 (크로스페이드 전환)
 - **풀스크린 전시** — 큰 이미지는 한 점씩 100vh로, 4점마다 구분선
 - **그리드** — 변형이 많은 이미지 그룹(같은 이름 3개 이상)과 작은 UI 조각들은 하단 그리드로
 - **라이트박스** — 클릭하면 확대, `←` `→` `Esc` 키보드 지원
@@ -59,6 +60,9 @@ gallery <폴더> -p <프리셋>    → UI 없이 바로 생성
   -t, --title <제목>   전시 제목 (기본: 폴더 이름)
   -r, --recursive      하위 폴더까지 스캔
   --min-wide <px>      풀스크린 전시로 걸 최소 가로 픽셀 (기본 900)
+  --audio <파일=A-B>   오디오 스크롤 구간 커스텀(%). 예: --audio bgm.mp3=0-50
+                       여러 번 사용 가능. 기본은 찾은 오디오를 균등 분할
+  --no-audio           오디오 아예 빼기
   --port <n>           웹 UI 포트 (기본: 8756부터 빈 포트 탐색)
   --no-open            웹 UI를 열 때 브라우저 자동 실행 끄기
   --open               바로 생성 모드에서 결과를 브라우저로 열기
@@ -72,7 +76,11 @@ gallery <폴더> -p <프리셋>    → UI 없이 바로 생성
 gallery ~/Desktop/짤모음                   # 웹 UI로 고르기 (기본)
 gallery ~/Desktop/짤모음 -p polaroid --open
 gallery ./assets -t "트릭" -p magazine -o 전시.html
+gallery ./assets -p dark --audio intro.mp3=0-30 --audio main.mp3=30-100
 ```
 
+웹 UI에도 **스크롤 BGM 패널**이 떠서 곡별로 켜고 끄거나 구간(%)을 바꿀 수 있다.
+
 기존 `gallery.html`이 있으면 덮어쓰지 않고 `gallery_2.html`로 저장한다.
-지원 포맷: png · jpg · jpeg · gif · webp · bmp · svg · avif
+지원 포맷 — 이미지: png · jpg · jpeg · gif · webp · bmp · svg · avif /
+동영상: mp4 · webm / 오디오: mp3 · wav · ogg · m4a · aac · flac · opus
